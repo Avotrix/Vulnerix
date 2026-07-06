@@ -1,0 +1,1 @@
+SELECT attack_vector FROM public.tech_stack_results LIMIT 5;
