@@ -1,6 +1,13 @@
 # Vulnerix
 
-Vulnerability intelligence platform that matches your tech stack against NVD and CERT-IN advisories and surfaces actionable security insights.
+Vulnerix is an Opensource Vulnerability intelligence and reporting platform that matches your tech stack against CVE's of NVD and CERT-IN advisories and surfaces actionable security insights.
+
+<p align="center">
+  <img width="700" height="259" alt="Untitled design (36)" src="https://github.com/user-attachments/assets/e6b414d0-b73f-45f0-b40c-54922559d0f9" />
+</p>
+
+
+
 
 ## Architecture
 
@@ -18,7 +25,12 @@ Frontend (React) ──► tech_stack table ──► cve-engine (Edge Function)
                                                ▼
                                    tech_stack_results ──► Dashboard
 ```
-
+## Future Roadmap
+- Introduce Remediation steps using AI (BYOK)
+- Integrate CISA-KEV Feeds
+- Develop webhook, more notification channels
+- Automatic tech stack updation
+ 
 ## Prerequisites
 
 - Docker Desktop
