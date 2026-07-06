@@ -1,0 +1,57 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+start.log
+supabase-start.log
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Environment variables - NEVER commit these
+.env
+.env.local
+.env.*.local
+.env.bkp
+.env.bak
+
+# Backup files
+*.bak
+*.bkp
+
+# Supabase config with secrets
+supabase/config.toml
+supabase/functions/.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# NVD output files
+nvd_data.json
+certin_civn_*.ndjson
+five_year_civn.ndjson
+failed_links_*.json
+
+# Supabase local volumes (contains DB data)
+volumes/db/data/

@@ -1,0 +1,19 @@
+# Supabase CLI config — used only for local CLI-managed Supabase
+# For self-hosted Docker Supabase, configure via Supabase/docker/.env instead
+project_id = "your-project-id"
+
+[functions.cve-engine]
+verify_jwt = false
+
+[functions.send-email]
+verify_jwt = false
+
+[functions.delete-user]
+verify_jwt = false
+
+[functions.splunk-advisories]
+verify_jwt = false
+
+[auth]
+site_url = "http://localhost"
+additional_redirect_urls = ["http://localhost"]
