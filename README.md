@@ -9,16 +9,10 @@
 Vulnerix is an Opensource Vulnerability intelligence and reporting platform that matches your tech stack against CVE's of NVD and CERT-IN advisories and surfaces actionable security insights.
 
 
-
-
-
-
-https://github.com/user-attachments/assets/2ebc7bae-6002-4256-91c9-f12d3b05a498
-
-
-
-
-
+Open source gave us the foundation. This is our way of giving back — built for Indian MSMEs. 🙏 India First 🇮🇳 
+* 🔍 Maps your tech stack against NVD & CERT-IN advisories
+* 📊 Real-time dashboard + alerts for MSMEs & MSSPs
+* 💡 Free. Open Source. Community-driven.
 
 
 # why we build it?
@@ -31,6 +25,12 @@ One of our long-standing clients — a cloud-first organization running their en
 They weren't asking for a complex enterprise scanner — they just didn't want yet another tool. They wanted something simple, timely, and relevant to their stack.
 We looked around. Nothing quite fit.
 So we built it ourselves.
+
+# Demo
+
+
+https://github.com/user-attachments/assets/2ebc7bae-6002-4256-91c9-f12d3b05a498
+
 
 ## Architecture
 
