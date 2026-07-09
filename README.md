@@ -1,10 +1,24 @@
-# What is Vulnerix?
-
-Vulnerix is an Opensource Vulnerability intelligence and reporting platform that matches your tech stack against CVE's of NVD and CERT-IN advisories and surfaces actionable security insights.
 
 <p align="center">
   <img width="700" height="259" alt="Untitled design (36)" src="https://github.com/user-attachments/assets/e6b414d0-b73f-45f0-b40c-54922559d0f9" />
 </p>
+
+
+# What is Vulnerix?
+
+Vulnerix is an Opensource Vulnerability intelligence and reporting platform that matches your tech stack against CVE's of NVD and CERT-IN advisories and surfaces actionable security insights.
+
+
+
+
+
+
+https://github.com/user-attachments/assets/2ebc7bae-6002-4256-91c9-f12d3b05a498
+
+
+
+
+
 
 
 # why we build it?
