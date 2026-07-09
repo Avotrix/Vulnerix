@@ -1,4 +1,4 @@
-# Vulnerix
+# What is Vulnerix?
 
 Vulnerix is an Opensource Vulnerability intelligence and reporting platform that matches your tech stack against CVE's of NVD and CERT-IN advisories and surfaces actionable security insights.
 
@@ -7,7 +7,16 @@ Vulnerix is an Opensource Vulnerability intelligence and reporting platform that
 </p>
 
 
+# why we build it?
 
+It started with a client conversation.
+One of our long-standing clients — a cloud-first organization running their entire operations on SaaS and cloud applications — came to us with a simple ask:
+
+> "We're on your SIEM & SOC. We're trying to stay ISO 27001 compliant and meet SEBI & RBI guidelines, yet we're not willing to stack another VA scanner on top of our existing spend just to get a timely heads-up on CVEs. There has to be a smarter way. Can you think of something for us?"
+
+They weren't asking for a complex enterprise scanner — they just didn't want yet another tool. They wanted something simple, timely, and relevant to their stack.
+We looked around. Nothing quite fit.
+So we built it ourselves.
 
 ## Architecture
 
