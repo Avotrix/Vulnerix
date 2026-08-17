@@ -8,7 +8,6 @@
 
 Vulnerix is an Opensource Vulnerability intelligence and reporting platform that matches your tech stack against CVE's of NVD and CERT-IN advisories and surfaces actionable security insights.
 
-Demo: https://vulnerix.avotrix.in/
 
 Open source gave us the foundation. This is our way of giving back — built for Indian MSMEs. 🙏 India First 🇮🇳 
 * 🔍 Maps your tech stack against NVD & CERT-IN advisories
