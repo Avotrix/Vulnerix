@@ -10,6 +10,7 @@ interface EditTechStackModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSubmit: (data: {
+    organization: string;
     vendorName: string;
     productName: string;
     productVersion: string;
@@ -22,6 +23,7 @@ const MAX_EMAILS = 5;
 
 const EditTechStackModal = ({ isOpen, onClose, onSubmit, techStack }: EditTechStackModalProps) => {
   const [formData, setFormData] = useState({
+    organization: '',
     vendorName: '',
     productName: '',
     productVersion: ''
@@ -33,6 +35,7 @@ const EditTechStackModal = ({ isOpen, onClose, onSubmit, techStack }: EditTechSt
   useEffect(() => {
     if (techStack) {
       setFormData({
+	organization: techStack.organization || '',
         vendorName: techStack.vendorName,
         productName: techStack.productName,
         productVersion: techStack.productVersion
@@ -153,15 +156,17 @@ const EditTechStackModal = ({ isOpen, onClose, onSubmit, techStack }: EditTechSt
           </div>
 
           {/* Content */}
-          <div className="p-6 space-y-4 max-h-[60vh] overflow-y-auto">
-            {/* Organization - Read-only display */}
-            <div className="space-y-2">
-              <Label className="text-muted-foreground">Organization</Label>
-              <div className="px-3 py-2 bg-muted/50 rounded-md text-sm text-muted-foreground">
-                {techStack.organization || 'N/A'}
-              </div>
-            </div>
+	    <div className="p-6 space-y-4 max-h-[60vh] overflow-y-auto">
 
+          {/* Organization (editable) */}
+            <div className="space-y-2">
+              <Label htmlFor="organization">Organization</Label>
+              <Input
+                id="organization"
+                value={formData.organization}
+                onChange={(e) => setFormData(prev => ({ ...prev, organization: e.target.value }))}
+              />
+            </div>
             <div className="space-y-2">
               <Label htmlFor="vendorName">Vendor Name</Label>
               <Input

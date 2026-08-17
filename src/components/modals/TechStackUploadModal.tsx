@@ -26,6 +26,7 @@ interface TechStackUploadModalProps {
 }
 
 interface ParsedRow {
+  organization?: string;
   vendor: string;
   product: string;
   version: string;
@@ -102,22 +103,22 @@ const TechStackUploadModal = ({ isOpen, onClose }: TechStackUploadModalProps) =>
     const productKey = findHeader(headers, ['product', 'product name', 'product_name']);
     const versionKey = findHeader(headers, ['version', 'product version', 'product_version']);
     const emailKey = findHeader(headers, ['email', 'email_to', 'email_ids', 'email id', 'email_id', 'emails']);
+    const organizationKey = findHeader(headers, ['organization', 'org', 'org_name', 'organization name']);
 
     if (!vendorKey || !productKey || !versionKey) return null;
-    return { vendorKey, productKey, versionKey, emailKey };
+    return { vendorKey, productKey, versionKey, emailKey, organizationKey };
   };
 
-  const normalizeRow = (row: any, keys: { vendorKey: string; productKey: string; versionKey: string; emailKey: string | null }): ParsedRow | null => {
+  const normalizeRow = (row: any, keys: { vendorKey: string; productKey: string; versionKey: string; emailKey: string | null; organizationKey: string | null }): ParsedRow | null => {
     const vendor = cellToString(row[keys.vendorKey]).trim();
     const product = cellToString(row[keys.productKey]).trim();
     const version = cellToString(row[keys.versionKey]).trim();
     const rawEmail = keys.emailKey ? cellToString(row[keys.emailKey]).trim() : '';
     const email = normalizeEmails(rawEmail);
-
+    const organization = keys.organizationKey ? cellToString(row[keys.organizationKey]).trim() : '';
     // Skip invalid rows: vendor, product, version are required
     if (!vendor || !product || !version) return null;
-
-    return { vendor, product, version, email_to: email };
+    return { vendor, product, version, email_to: email, organization: organization || undefined };
   };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -196,13 +197,15 @@ const TechStackUploadModal = ({ isOpen, onClose }: TechStackUploadModalProps) =>
     const workbook = new ExcelJS.Workbook();
     const ws = workbook.addWorksheet("Template");
     ws.columns = [
+      { header: "organization", key: "organization", width: 25 },
       { header: "vendor", key: "vendor", width: 20 },
       { header: "product", key: "product", width: 20 },
       { header: "version", key: "version", width: 15 },
       { header: "email_to", key: "email_to", width: 50 },
     ];
-    ws.addRow({ vendor: "Fortinet", product: "FortiOS", version: "7.6.4", email_to: "security@example.com, admin@example.com" });
-    ws.addRow({ vendor: "Adobe", product: "Acrobat", version: "3.1", email_to: "" });
+    ws.addRow({ organization: "Your Organization", vendor: "Fortinet", product: "FortiOS", version: "7.6.4", email_to: "security@example.com, admin@example.com" });
+    ws.addRow({ organization: "Your Organization", vendor: "Adobe", product: "Acrobat", version: "3.1", email_to: "" });
+
 
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
@@ -242,7 +245,7 @@ const TechStackUploadModal = ({ isOpen, onClose }: TechStackUploadModalProps) =>
           vendor: row.vendor,
           product_name: row.product,
           version: row.version,
-          org_name: userOrganization,
+          org_name: row.organization || userOrganization,
           email_id: userEmail,        // Always auth email for RLS
           email_list: emailList        // Full comma-separated list
         };

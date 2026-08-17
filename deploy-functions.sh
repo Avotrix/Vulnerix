@@ -6,7 +6,7 @@
 set -e
 
 SOURCE="supabase/functions"
-TARGET="../Supabase/docker/volumes/functions"
+TARGET="../supabase/docker/volumes/functions"
 CONTAINER="supabase-edge-functions"
 
 ALL_FUNCTIONS=("cve-engine" "delete-user" "send-email" "splunk-advisories")
