@@ -101,6 +101,7 @@ const TechStack = () => {
   };
 
   const handleEditSubmit = async (data: {
+    organization: string;
     vendorName: string;
     productName: string;
     productVersion: string;
@@ -110,7 +111,8 @@ const TechStack = () => {
 
     try {
       await updateTechStack(editingStack.id, {
-        vendor: data.vendorName,
+        org_name: data.organization,
+	vendor: data.vendorName,
         product_name: data.productName,
         version: data.productVersion,
         email_list: data.emailList

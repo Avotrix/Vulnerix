@@ -24,6 +24,7 @@ const ManualTechStackModal = ({ isOpen, onClose, onSubmit }: ManualTechStackModa
   const { user } = useAuth();
   const userEmail = user?.email || '';
   const userOrganization = user?.user_metadata?.organization || 'Default Organization';
+  const [organization, setOrganization] = useState(userOrganization);
 
   const [formData, setFormData] = useState({
     vendorName: '',
@@ -76,7 +77,7 @@ const ManualTechStackModal = ({ isOpen, onClose, onSubmit }: ManualTechStackModa
       const validEmails = emails.filter(e => e.trim() && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
       
       onSubmit({
-        organization: userOrganization,
+        organization: organization,
         vendorName: formData.vendorName,
         productName: formData.productName,
         productVersion: formData.productVersion,
@@ -184,12 +185,15 @@ const ManualTechStackModal = ({ isOpen, onClose, onSubmit }: ManualTechStackModa
               </p>
             </div>
 
-            {/* Organization (auto-filled, read-only display) */}
+	    {/* Organization (editable, defaults to profile value) */}
             <div className="space-y-2">
-              <Label className="text-muted-foreground">Organization</Label>
-              <div className="px-3 py-2 rounded-md bg-muted/50 border border-border text-foreground text-sm">
-                {userOrganization}
-              </div>
+              <Label htmlFor="organization">Organization</Label>
+              <Input
+                id="organization"
+                value={organization}
+                onChange={(e) => setOrganization(e.target.value)}
+                placeholder={userOrganization}
+              />
             </div>
 
             <div className="space-y-2">

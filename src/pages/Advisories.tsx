@@ -39,6 +39,8 @@ const Advisories = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [severityFilter, setSeverityFilter] = useState<string>("all");
   const [vendorFilter, setVendorFilter] = useState<string>("all");
+  const [dateFilter, setDateFilter] = useState<string>("all"); // "1" | "7" | "15" | "30" | "custom" | "all"
+  const [customDays, setCustomDays] = useState<string>("");
   const [currentPage, setCurrentPage] = useState(1);
   const [emailStatuses, setEmailStatuses] = useState<Record<string, string>>({});
   const [certInEnabled] = useState(getCertInToggle);
@@ -96,10 +98,16 @@ const Advisories = () => {
       const matchesSeverity = severityFilter === "all" || advisory.Severity === severityFilter;
       const matchesVendor = vendorFilter === "all" ||
         advisory.tech_stack_vendor?.toLowerCase() === vendorFilter.toLowerCase();
-      
-      return matchesSearch && matchesSeverity && matchesVendor;
+      const matchesDate = dateFilter === "all" || (() => {
+        const days = dateFilter === "custom" ? parseInt(customDays, 10) : parseInt(dateFilter, 10);
+        if (!days || isNaN(days)) return true;
+        const cutoff = new Date();
+        cutoff.setDate(cutoff.getDate() - days);
+        return new Date(advisory.lastModified) >= cutoff;
+      })();
+      return matchesSearch && matchesSeverity && matchesVendor && matchesDate;
     });
-  }, [baseAdvisories, searchQuery, severityFilter, vendorFilter]);
+  }, [baseAdvisories, searchQuery, severityFilter, vendorFilter, dateFilter, customDays]);
 
   const totalPages = Math.ceil(filteredAdvisories.length / ITEMS_PER_PAGE);
   const paginatedAdvisories = filteredAdvisories.slice(
@@ -252,6 +260,29 @@ const Advisories = () => {
                 ))}
               </SelectContent>
             </Select>
+	    <Select value={dateFilter} onValueChange={(v) => { setDateFilter(v); setCurrentPage(1); }}>
+              <SelectTrigger className="w-36">
+                <SelectValue placeholder="Date" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Time</SelectItem>
+                <SelectItem value="1">Last 1 day</SelectItem>
+                <SelectItem value="7">Last 7 days</SelectItem>
+                <SelectItem value="15">Last 15 days</SelectItem>
+                <SelectItem value="30">Last 30 days</SelectItem>
+                <SelectItem value="custom">Custom</SelectItem>
+              </SelectContent>
+            </Select>
+            {dateFilter === "custom" && (
+              <Input
+                type="number"
+                min="1"
+                placeholder="Days"
+                value={customDays}
+                onChange={(e) => { setCustomDays(e.target.value); setCurrentPage(1); }}
+                className="w-24"
+              />
+            )}
           </div>
         </div>
 
