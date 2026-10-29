@@ -26,6 +26,39 @@ They weren't asking for a complex enterprise scanner — they just didn't want y
 We looked around. Nothing quite fit.
 So we built it ourselves.
 
+# ???? What's New in v2.0.0
+
+This release adds AI-powered remediation, smarter matching, and finer control over alerts.
+
+## AI Remediation (Bring Your Own AI Key)
+* Every advisory can generate an AI-written fix on demand ??? shown right inside the advisory tile.
+* Three clear sections: **Why it is vulnerable**, **Impact**, and **Fix** (short, actionable steps).
+* Works with your own provider key ??? **Groq** and **OpenRouter** supported. Keys are stored **encrypted** server-side and never exposed to the browser (one key per provider, switchable from Settings).
+* Smart fix handling: if a fixed version exists, it shows the exact upgrade path (e.g. "you are on 7.2.8, upgrade to 7.2.11"); if there is no fix yet, it shows the "vulnerable up to and including" version and safe interim guidance (vendor advisory, backup, test in staging).
+* Responses are cached per CVE + version + provider, so repeat views are instant.
+
+## Smarter, Lighter CVE Matching Engine
+* **Incremental matching**: scheduled runs match only newly added/updated CVEs (watermark-based) instead of rescanning the whole database every time ??? much faster and lighter on resources.
+* **Instant match on tech-stack change**: adding, editing, or uploading a tech stack immediately matches that entry against the full CVE database (no waiting for the next cycle).
+* Indexed NVD matching for fast lookups even as the CVE database grows.
+
+## Notification Controls
+* **All-clear email toggle**: customers can now turn off the daily "reassurance" email and receive emails **only** when there are matching CVEs ??? still respecting their chosen schedule (immediate / daily / weekly) and severity thresholds.
+* Severity-based filtering and per-schedule digests (immediate, daily, weekly).
+
+## Dual-Source Intelligence
+* Continuous matching against both the **National Vulnerability Database (NVD)** and **CERT-In** advisories.
+
+## Admin & Observability
+* **System Logs** in the admin Audit view: daily NVD and CERT-In run results (with previous/new run status), plus mail, refresh, and AI errors ??? all shown in readable IST timestamps.
+* System Health panel for database, auth, edge functions, and RLS status.
+
+## Dashboard & Advisories
+* Dashboard shows live risk level and recent activity.
+* Advisories page defaults to the **last 7 days** for focus, with full history available on demand.
+
+---
+
 # Demo
 
 

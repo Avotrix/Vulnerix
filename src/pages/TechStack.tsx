@@ -79,7 +79,8 @@ const TechStack = () => {
     isLoading, 
     addTechStack, 
     updateTechStack, 
-    deleteTechStack 
+    deleteTechStack,
+    applyTechStacks
   } = useTechStacks();
   
   const [searchQuery, setSearchQuery] = useState("");
@@ -87,6 +88,15 @@ const TechStack = () => {
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [isManualModalOpen, setIsManualModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+
+  // Single-add / edit conflict prompt (same org+vendor+product, different version)
+  const [conflict, setConflict] = useState<any | null>(null);
+  const [conflictClean, setConflictClean] = useState<any[]>([]);
+  const [conflictExactMerges, setConflictExactMerges] = useState<any[]>([]);
+  const [conflictTargetId, setConflictTargetId] = useState<string>("");
+  // Set only when the conflict originated from editing an existing row.
+  const [pendingEditId, setPendingEditId] = useState<string | null>(null);
+  const [pendingEditData, setPendingEditData] = useState<any | null>(null);
 
   const filteredStacks = techStacks.filter(stack => 
     stack.vendorName.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -109,28 +119,84 @@ const TechStack = () => {
   }) => {
     if (!editingStack) return;
 
+    // Check whether the edited values collide with ANOTHER existing entry
+    // (same org+vendor+product) at a different version. If so, prompt the user
+    // just like add/upload. The row being edited itself is excluded.
+    const norm = (s: string) => (s || '').trim().toLowerCase();
+    const sameProductOthers = techStacks.filter(t =>
+      t.id !== editingStack.id &&
+      norm(t.organization || '') === norm(data.organization) &&
+      norm(t.vendorName) === norm(data.vendorName) &&
+      norm(t.productName) === norm(data.productName)
+    );
+    const exactOther = sameProductOthers.find(t => norm(t.productVersion) === norm(data.productVersion));
+
+    // Exact duplicate of another row -> block (can't have two identical rows)
+    if (exactOther) {
+      toast({
+        title: "Duplicate entry",
+        description: "Another entry with this organization, vendor, product and version already exists.",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    // Same product exists under a different version on another row -> prompt
+    if (sameProductOthers.length > 0 && user?.email) {
+      setConflict({
+        incoming: {
+          vendor: data.vendorName,
+          product_name: data.productName,
+          version: data.productVersion,
+          org_name: data.organization,
+          email_id: user.email,
+          email_list: data.emailList,
+        },
+        existingRows: sameProductOthers.map(t => ({
+          id: t.id,
+          version: t.productVersion,
+          email_list: t.emailList || null,
+        })),
+      });
+      setConflictClean([]);
+      setConflictExactMerges([]);
+      setConflictTargetId(sameProductOthers[0].id);
+      // After the user resolves, the original edited row is left as-is unless
+      // they chose to merge into it. We also update the edited row's own fields.
+      setPendingEditId(editingStack.id);
+      setPendingEditData(data);
+      return;
+    }
+
+    // No conflict with other rows -> straightforward update of this row
     try {
       await updateTechStack(editingStack.id, {
         org_name: data.organization,
-	vendor: data.vendorName,
+        vendor: data.vendorName,
         product_name: data.productName,
         version: data.productVersion,
         email_list: data.emailList
       });
-      
-      // Trigger CVE engine in background after update
       triggerEngineBackground();
-      
       toast({
         title: "Updated successfully",
         description: "The product information has been updated.",
       });
     } catch (err: any) {
-      toast({
-        title: "Error",
-        description: err.message || "Failed to update",
-        variant: "destructive"
-      });
+      const msg = JSON.stringify(err || {});
+      if (msg.includes('uq_tech_stack_entry') || msg.includes('23505') || msg.includes('duplicate key')) {
+        toast({
+          title: "Duplicate entry",
+          description: "An entry with this organization, vendor, product and version already exists.",
+          variant: "destructive"
+        });
+      } else {
+        toast({
+          title: "Error",
+          description: err.message || "Failed to update",
+          variant: "destructive"
+        });
+      }
     }
   };
 
@@ -156,7 +222,10 @@ const TechStack = () => {
       return;
     }
 
-    const orgName = user?.user_metadata?.organization || data.organization || 'Default Organization';
+    // User-typed organization wins; fall back to the account org, then a default.
+    const orgName = (data.organization && data.organization.trim())
+      || user?.user_metadata?.organization
+      || 'Default Organization';
 
     try {
       // email_id = auth email (for RLS), email_list = custom emails or auth email
@@ -179,11 +248,81 @@ const TechStack = () => {
         description: `The product has been added to your tech stack.`,
       });
     } catch (err: any) {
+      if (err?.code === 'TECH_STACK_CONFLICTS') {
+        // Same org+vendor+product already exists with a different version.
+        const c = err.conflicts?.[0];
+        setConflict(c);
+        setConflictClean(err.clean || []);
+        setConflictExactMerges(err.exactMerges || []);
+        setConflictTargetId(c?.existingRows?.[0]?.id || "");
+        return;
+      }
       toast({
         title: "Error",
         description: err.message || "Failed to add product",
         variant: "destructive"
       });
+    }
+  };
+
+  // Resolve the single-add/edit conflict based on the user's choice.
+  const resolveConflict = async (action: 'merge' | 'separate') => {
+    if (!conflict) return;
+    try {
+      if (pendingEditId && pendingEditData) {
+        // ── EDIT flow ──────────────────────────────────────────────────────
+        if (action === 'merge') {
+          // Merge into the chosen OTHER row (update its version + emails),
+          // then remove the row we were editing (its data moved into target).
+          const targetId = conflictTargetId || conflict.existingRows[0]?.id;
+          await applyTechStacks({
+            clean: [],
+            exactMerges: [],
+            decisions: [{ incoming: conflict.incoming, action: 'merge', mergeTargetId: targetId }],
+          });
+          if (targetId !== pendingEditId) {
+            await deleteTechStack(pendingEditId);
+          }
+          toast({ title: "Entry merged", description: "The existing entry was updated and the duplicate was removed." });
+        } else {
+          // Keep separate: just update the edited row with its new values.
+          await updateTechStack(pendingEditId, {
+            org_name: pendingEditData.organization,
+            vendor: pendingEditData.vendorName,
+            product_name: pendingEditData.productName,
+            version: pendingEditData.productVersion,
+            email_list: pendingEditData.emailList,
+          });
+          toast({ title: "Entry updated", description: "Kept as a separate entry with the new version." });
+        }
+      } else {
+        // ── ADD flow (manual single add) ────────────────────────────────────
+        await applyTechStacks({
+          clean: conflictClean,
+          exactMerges: conflictExactMerges,
+          decisions: [{
+            incoming: conflict.incoming,
+            action,
+            mergeTargetId: action === 'merge' ? (conflictTargetId || conflict.existingRows[0]?.id) : undefined,
+          }],
+        });
+        toast({
+          title: action === 'merge' ? "Entry updated" : "Entry added",
+          description: action === 'merge'
+            ? "The existing entry was updated to the new version."
+            : "A separate entry was created for the new version.",
+        });
+      }
+      triggerEngineBackground();
+    } catch (err: any) {
+      toast({ title: "Error", description: err.message || "Failed to apply", variant: "destructive" });
+    } finally {
+      setConflict(null);
+      setConflictClean([]);
+      setConflictExactMerges([]);
+      setConflictTargetId("");
+      setPendingEditId(null);
+      setPendingEditData(null);
     }
   };
 
@@ -388,6 +527,43 @@ const TechStack = () => {
         onSubmit={handleEditSubmit}
         techStack={editingStack}
       />
+
+      {/* Single-add / edit conflict: same org+vendor+product exists with a different version */}
+      <AlertDialog open={!!conflict} onOpenChange={(open) => { if (!open) { setConflict(null); setPendingEditId(null); setPendingEditData(null); } }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Entry already exists</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3">
+                <p>
+                  {conflict?.incoming?.vendor} {conflict?.incoming?.product_name} already exists for{" "}
+                  {conflict?.incoming?.org_name}. Update the existing entry to version{" "}
+                  <span className="font-mono">{conflict?.incoming?.version}</span>, or add it as a separate entry?
+                </p>
+                {conflict?.existingRows?.length > 1 && (
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted-foreground">Multiple versions exist. Choose which one to update:</p>
+                    <select
+                      className="w-full border border-border rounded-md bg-background p-2 text-sm text-foreground"
+                      value={conflictTargetId}
+                      onChange={(e) => setConflictTargetId(e.target.value)}
+                    >
+                      {conflict.existingRows.map((r: any) => (
+                        <option key={r.id} value={r.id}>Version {r.version}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => { setConflict(null); setPendingEditId(null); setPendingEditData(null); }}>Cancel</AlertDialogCancel>
+            <Button variant="outline" onClick={() => resolveConflict('separate')}>Add separate</Button>
+            <AlertDialogAction onClick={() => resolveConflict('merge')}>Update existing</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </DashboardLayout>
   );
 };

@@ -17,3 +17,6 @@ verify_jwt = false
 [auth]
 site_url = "http://localhost"
 additional_redirect_urls = ["http://localhost"]
+
+[functions.send-notifications]
+verify_jwt = false

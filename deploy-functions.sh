@@ -9,7 +9,7 @@ SOURCE="supabase/functions"
 TARGET="../supabase/docker/volumes/functions"
 CONTAINER="supabase-edge-functions"
 
-ALL_FUNCTIONS=("cve-engine" "delete-user" "send-email" "splunk-advisories")
+ALL_FUNCTIONS=("cve-engine" "delete-user" "send-email" "splunk-advisories" "send-notifications")
 
 # If a specific function is passed as argument
 if [ -n "$1" ]; then

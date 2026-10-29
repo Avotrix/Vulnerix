@@ -17,10 +17,15 @@ serve(async (req) => {
     const { to, subject, html } = await req.json()
 
     // Environment Variables se details nikalna
-    const smtpHost = Deno.env.get('SMTP_HOST') || 'smtp.gmail.com'
+    // Gmail SMTP (DEPRECATED - commented out, using Outlook instead):
+    // const smtpHost = Deno.env.get('SMTP_HOST') || 'smtp.gmail.com'
+    
+    // Outlook/Office365 SMTP (ACTIVE):
+    const smtpHost = Deno.env.get('SMTP_HOST') || 'smtp.office365.com'
     const smtpPort = parseInt(Deno.env.get('SMTP_PORT') || '587')
     const smtpUser = Deno.env.get('SMTP_USER')
     const smtpPass = Deno.env.get('SMTP_PASS')
+    const smtpFromEmail = Deno.env.get('SMTP_FROM_EMAIL') || smtpUser // Fall back to SMTP_USER if not set
 
     console.log(`Connecting to SMTP Host: ${smtpHost} via User: ${smtpUser}`);
 
@@ -47,7 +52,7 @@ serve(async (req) => {
     console.log(`Sending email to ${to}...`);
 
     const info = await transporter.sendMail({
-      from: smtpUser, // Gmail/Outlook dono login wali email mangte hain
+      from: smtpFromEmail, // Use SMTP_FROM_EMAIL (support@avotrix.com), not the login user
       to: to,
       subject: subject,
       html: html,

@@ -297,7 +297,15 @@ export const useAdminActions = () => {
   const triggerEngine = useCallback(async (): Promise<AdminActionResult> => {
     return executeAdminAction(
       async () => {
+        // Send the caller's session token so the edge function can authenticate
+        // and verify admin role server-side. trigger:'manual' requests an
+        // all-users (system-wide) re-match.
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session?.access_token) {
+          return { success: false, error: 'No valid session' };
+        }
         const { error } = await supabase.functions.invoke('cve-engine', {
+          headers: { Authorization: `Bearer ${session.access_token}` },
           body: { trigger: 'manual', admin_id: user?.id },
         });
 

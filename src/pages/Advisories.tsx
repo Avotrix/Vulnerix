@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   Search, Filter, ExternalLink, ChevronLeft, ChevronRight,
-  AlertCircle, Info, Shield, Mail, MailCheck, Loader2
+  AlertCircle, Info, Shield, Mail, MailCheck, Loader2, Sparkles, X, CheckCircle2, Link2
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,7 +39,7 @@ const Advisories = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [severityFilter, setSeverityFilter] = useState<string>("all");
   const [vendorFilter, setVendorFilter] = useState<string>("all");
-  const [dateFilter, setDateFilter] = useState<string>("all"); // "1" | "7" | "15" | "30" | "custom" | "all"
+  const [dateFilter, setDateFilter] = useState<string>("7"); // "1" | "7" | "15" | "30" | "custom" | "all"
   const [customDays, setCustomDays] = useState<string>("");
   const [currentPage, setCurrentPage] = useState(1);
   const [emailStatuses, setEmailStatuses] = useState<Record<string, string>>({});
@@ -114,6 +114,93 @@ const Advisories = () => {
     (currentPage - 1) * ITEMS_PER_PAGE,
     currentPage * ITEMS_PER_PAGE
   );
+
+  // ---- AI Remediation (Phase 3) ----
+  const [aiOpen, setAiOpen] = useState<string | null>(null);
+  const [aiLoading, setAiLoading] = useState<string | null>(null);
+  const [aiData, setAiData] = useState<Record<string, any>>({});
+
+  const aiKeyFor = (a: any) => a.id || a.cve_id;
+
+  // Render AI text: convert **bold** (section headers) to bold, keep line breaks.
+  const pillStyle = (label: string) => {
+    const t = label.toLowerCase();
+    if (t.includes("vulnerab") || t.includes("why")) return "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300";
+    if (t.includes("impact")) return "bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-300";
+    if (t.includes("fix") || t.includes("remediat")) return "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300";
+    return "bg-muted text-foreground";
+  };
+  const renderRemediation = (text: string) => {
+    // Normalize: put each numbered step (1. 2. 3. ...) on its own line even if the AI inlined them.
+    const normalized = (text || "").replace(/\s+(\d+\.\s)/g, "\n$1");
+    const lines = normalized.split(/\n/).filter(l => l.trim() !== "");
+    const out: any[] = [];
+    lines.forEach((line, li) => {
+      // Match a header like **Why it is vulnerable** optionally followed by ':' and inline body.
+      const m = line.trim().match(/^\*\*\s*([^*]+?)\s*\*\*\s*:?\s*(.*)$/);
+      if (m) {
+        const label = m[1].trim();
+        const body = m[2].trim();
+        out.push(
+          <div key={`h${li}`} className="mt-3 mb-1">
+            <span className={`inline-block px-2.5 py-0.5 rounded-full text-[11px] font-bold tracking-wide uppercase ${pillStyle(label)}`}>{label}</span>
+          </div>
+        );
+        if (body) out.push(<div key={`b${li}`} className="text-foreground">{body}</div>);
+        return;
+      }
+      // plain body line, with inline **bold** support
+      const parts = line.split(/(\*\*[^*]+\*\*)/g).filter(p => p !== "");
+      out.push(
+        <div key={`p${li}`} className="text-foreground">
+          {parts.map((p, pi) =>
+            p.startsWith("**") && p.endsWith("**")
+              ? <span key={pi} className="font-semibold">{p.slice(2, -2)}</span>
+              : <span key={pi}>{p}</span>
+          )}
+        </div>
+      );
+    });
+    return out;
+  };
+
+  const handleAiRemediation = async (advisory: any) => {
+    const key = aiKeyFor(advisory);
+    if (aiOpen === key) { setAiOpen(null); return; }   // toggle close
+    setAiOpen(key);
+    if (aiData[key]) return;                             // already loaded
+    setAiLoading(key);
+    try {
+      const { data, error } = await supabase.functions.invoke('ai-remediation', {
+        body: {
+          cve_id: advisory.cve_id,
+          installed_version: advisory.tech_stack_version || '',
+          vendor: advisory.tech_stack_vendor || '',
+          product: advisory.tech_stack_product || '',
+        },
+      });
+      if (error) throw error;
+      if (data?.error === 'no_ai_key') {
+        toast({ title: 'Set up AI provider', description: 'Choose a provider and add your API key in Settings.' });
+        setAiOpen(null);
+        window.location.href = '/settings?section=ai';
+        return;
+      }
+      if (data?.error) {
+        const msg = data.error === 'no_credits' ? 'Your AI provider has no credits.'
+          : data.error === 'invalid_key' ? 'Your AI API key is invalid.'
+          : data.detail || 'Could not generate remediation.';
+        setAiData(prev => ({ ...prev, [key]: { error: msg } }));
+        return;
+      }
+      setAiData(prev => ({ ...prev, [key]: data }));
+    } catch (e: any) {
+      setAiData(prev => ({ ...prev, [key]: { error: e.message || 'Request failed' } }));
+    } finally {
+      setAiLoading(null);
+    }
+  };
+
 
   const handleSendEmail = async (advisory: Advisory) => {
     const vendorKey = advisory.tech_stack_vendor?.toLowerCase() || '';
@@ -411,8 +498,78 @@ const Advisories = () => {
                         </TooltipContent>
                       </Tooltip>
                     </TooltipProvider>
+                    <Button
+                      variant={aiOpen === aiKeyFor(advisory) ? "secondary" : "accent"}
+                      size="sm"
+                      className="w-full"
+                      onClick={() => handleAiRemediation(advisory)}
+                      disabled={aiLoading === aiKeyFor(advisory)}
+                    >
+                      {aiLoading === aiKeyFor(advisory) ? (
+                        <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Generating...</>
+                      ) : (
+                        <><Sparkles className="h-4 w-4 mr-2" />AI Remediation</>
+                      )}
+                    </Button>
                   </div>
                 </div>
+                {aiOpen === aiKeyFor(advisory) && (
+                  <div className="border-t border-border px-6 pb-6 pt-4 bg-muted/20">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <Sparkles className="h-4 w-4 text-accent" />
+                        <span className="font-semibold text-sm">AI Remediation</span>
+                      </div>
+                      <Button variant="outline" size="sm" className="h-7 gap-1 border-border bg-background hover:bg-destructive hover:text-destructive-foreground hover:border-destructive" onClick={() => setAiOpen(null)}>
+                        <X className="h-4 w-4" /> Close
+                      </Button>
+                    </div>
+                    {aiLoading === aiKeyFor(advisory) ? (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+                        <Loader2 className="h-4 w-4 animate-spin" /> Generating remediation...
+                      </div>
+                    ) : aiData[aiKeyFor(advisory)]?.error ? (
+                      <p className="text-sm text-destructive">{aiData[aiKeyFor(advisory)].error}</p>
+                    ) : aiData[aiKeyFor(advisory)] ? (
+                      <div className="space-y-3">
+                        {aiData[aiKeyFor(advisory)].fix_version && (
+                          <div className="flex items-start gap-2 p-3 rounded-lg bg-green-50 border border-green-200 dark:bg-green-950/20 dark:border-green-900">
+                            <CheckCircle2 className="h-4 w-4 text-green-600 mt-0.5 shrink-0" />
+                            <p className="text-sm text-foreground">
+                              You are on version <span className="font-mono font-medium">{aiData[aiKeyFor(advisory)].installed_version || advisory.tech_stack_version}</span>.
+                              Please upgrade to <span className="font-mono font-medium">{aiData[aiKeyFor(advisory)].fix_version}</span> or later, where this vulnerability is fixed.
+                            </p>
+                          </div>
+                        )}
+                        {!aiData[aiKeyFor(advisory)].fix_version && aiData[aiKeyFor(advisory)].vuln_ceiling && (
+                          <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 dark:bg-amber-950/20 dark:border-amber-900">
+                            <AlertCircle className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" />
+                            <p className="text-sm text-foreground">
+                              You are on version <span className="font-mono font-medium">{aiData[aiKeyFor(advisory)].installed_version || advisory.tech_stack_version}</span>.
+                              Vulnerable up to and including <span className="font-mono font-medium">{aiData[aiKeyFor(advisory)].vuln_ceiling}</span>. No fixed version is published yet, monitor the vendor advisory.
+                            </p>
+                          </div>
+                        )}
+                        <div className="text-sm text-foreground leading-relaxed">
+                          {renderRemediation(aiData[aiKeyFor(advisory)].remediation)}
+                        </div>
+                        {Array.isArray(aiData[aiKeyFor(advisory)].references) && aiData[aiKeyFor(advisory)].references.length > 0 && (
+                          <div className="pt-1">
+                            <span className="text-xs text-muted-foreground block mb-1">Reference Link</span>
+                            <div className="space-y-1">
+                              {aiData[aiKeyFor(advisory)].references.map((r: string, i: number) => (
+                                <a key={i} href={r} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-sm text-accent hover:underline break-all">
+                                  <Link2 className="h-3 w-3 shrink-0" /> {r}
+                                </a>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        <p className="text-xs text-muted-foreground pt-1">Generated by {aiData[aiKeyFor(advisory)].provider ? (aiData[aiKeyFor(advisory)].provider.charAt(0).toUpperCase() + aiData[aiKeyFor(advisory)].provider.slice(1) + " AI") : "AI"} from NVD/CERT-In data.</p>
+                      </div>
+                    ) : null}
+                  </div>
+                )}
               </div>
             </motion.div>
           ))}

@@ -6,6 +6,34 @@ import { TechStack, mapDbTechStack } from '@/lib/mockData';
 // =============================================
 // TYPES
 // =============================================
+
+/** An incoming tech stack row (from CSV upload, manual add, or edit). */
+export type IncomingStack = {
+  vendor: string;
+  product_name: string;
+  version: string;
+  org_name: string;
+  email_id: string;
+  email_list?: string;
+};
+
+/** An existing DB row matching an incoming stack on org+vendor+product but a DIFFERENT version. */
+export type TechStackConflict = {
+  incoming: IncomingStack;
+  existingRows: Array<{ id: string; version: string; email_list: string | null }>;
+};
+
+/**
+ * User's resolution for a single conflict.
+ *  - 'separate' -> insert the incoming row as a new entry.
+ *  - 'merge'    -> update the chosen existing row's version + merge emails.
+ */
+export type ConflictDecision = {
+  incoming: IncomingStack;
+  action: 'separate' | 'merge';
+  mergeTargetId?: string; // required when action === 'merge'
+};
+
 interface AdvisoryData {
   id: string;
   cve_id: string;
@@ -22,6 +50,8 @@ interface AdvisoryData {
   Reference_URL: string | null;
   organization: string;
   email_to: string;
+  hasNvd?: boolean;
+  hasCertIn?: boolean;
 }
 
 interface DashboardStats {
@@ -89,15 +119,26 @@ const mergeAdvisories = (rows: any[]): any[] => {
         ...nvd,
         cert_in: certIn.cert_in,
         severity_cert_in: certIn.severity_cert_in,
+        __hasNvd: true,
+        __hasCertIn: true,
       });
     } else if (nvd) {
-      merged.push(nvd);
+      merged.push({ ...nvd, __hasNvd: true, __hasCertIn: false });
     } else if (certIn) {
-      merged.push(certIn);
+      merged.push({ ...certIn, __hasNvd: false, __hasCertIn: true });
     }
   }
 
-  return [...merged, ...standalone];
+  // Sort the full merged set by last_modified DESC (newest first).
+  // The Map grouping above does not preserve the DB sort order, so we
+  // re-sort here to guarantee the most recently modified CVEs appear first.
+  const combined = [...merged, ...standalone.map((s: any) => ({ ...s, __hasNvd: false, __hasCertIn: true }))];
+  combined.sort((a, b) => {
+    const ta = a.last_modified ? new Date(a.last_modified).getTime() : (a.created_at ? new Date(a.created_at).getTime() : 0);
+    const tb = b.last_modified ? new Date(b.last_modified).getTime() : (b.created_at ? new Date(b.created_at).getTime() : 0);
+    return tb - ta; // descending
+  });
+  return combined;
 };
 
 const transformAdvisory = (item: any): AdvisoryData => ({
@@ -122,7 +163,9 @@ const transformAdvisory = (item: any): AdvisoryData => ({
     : item.reference_url || null,
   attack_vector: item.attack_vector || 'N/A',
   organization: item.org_name || 'Unknown',
-  email_to: item.email_id || ''
+  email_to: item.email_id || '',
+  hasNvd: item.__hasNvd !== false,
+  hasCertIn: item.__hasCertIn === true,
 });
 
 // =============================================
@@ -165,115 +208,191 @@ export const useTechStacks = () => {
     fetchTechStacks();
   }, [fetchTechStacks]);
 
-  const addTechStack = async (stack: {
-    vendor: string;
-    product_name: string;
-    version: string;
-    org_name: string;
-    email_id: string;
-    email_list?: string;
-  }) => {
-    // Check for duplicate entry (case-insensitive match on vendor + product + version)
-    const { data: existingList, error: fetchErr } = await supabase
-      .from('tech_stack')
-      .select('id, vendor, product_name, version')
-      .eq('email_id', stack.email_id);
-
-    if (!fetchErr && existingList) {
-      const duplicate = existingList.find(row =>
-        (row.vendor || '').toLowerCase() === stack.vendor.toLowerCase() &&
-        (row.product_name || '').toLowerCase() === stack.product_name.toLowerCase() &&
-        (row.version || '').toLowerCase() === (stack.version || '').toLowerCase()
-      );
-
-      if (duplicate) {
-        throw new Error(`"${stack.vendor} / ${stack.product_name} @ ${stack.version || '*'}" already exists in your tech stack.`);
-      }
+  // Merge two comma-separated email lists (case-insensitive union, order preserved)
+  const mergeEmailLists = (a: string, b: string): string => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const src of [a, b]) {
+      (src || '').split(',').map(e => e.trim()).filter(Boolean).forEach(e => {
+        const k = e.toLowerCase();
+        if (!seen.has(k)) { seen.add(k); out.push(e); }
+      });
     }
-
-    const { data, error } = await supabase
-      .from('tech_stack')
-      .insert(stack as any)
-      .select()
-      .single();
-
-    if (error) {
-      // Handle DB unique constraint violation with a friendly message
-      const errMsg = JSON.stringify(error);
-      if (errMsg.includes('uq_tech_stack_entry') || errMsg.includes('duplicate key') || errMsg.includes('unique constraint') || errMsg.includes('23505')) {
-        throw new Error(`"${stack.vendor} / ${stack.product_name} @ ${stack.version || '*'}" already exists in your tech stack.`);
-      }
-      throw new Error(error.message || 'Failed to add product');
-    }
-    await fetchTechStacks();
-    return data;
+    return out.join(',');
   };
 
-  const addMultipleTechStacks = async (stacks: Array<{
-    vendor: string;
-    product_name: string;
-    version: string;
-    org_name: string;
-    email_id: string;
-    email_list?: string;
-  }>) => {
+  /**
+   * Analyze a batch of incoming stacks against existing tech stack rows.
+   * Returns:
+   *  - clean: rows that are brand new (no org+vendor+product match) -> safe to insert
+   *  - exactMerges: rows whose org+vendor+product+version already exists -> just merge emails
+   *  - conflicts: rows where org+vendor+product exists but version differs -> need user choice
+   */
+  const analyzeTechStacks = async (stacks: IncomingStack[]) => {
     if (!user?.email) throw new Error('Not authenticated');
 
     const { data: existing } = await supabase
       .from('tech_stack')
-      .select('*')
+      .select('id, org_name, vendor, product_name, version, email_list, email_id')
       .eq('email_id', user.email);
 
-    const existingMap = new Map<string, any>();
-    (existing || []).forEach(row => {
-      const key = `${(row.vendor || '').toLowerCase()}|${(row.product_name || '').toLowerCase()}|${(row.version || '').toLowerCase()}|${(row.org_name || '').toLowerCase()}`;
-      existingMap.set(key, row);
+    const rows = existing || [];
+    const idKey = (r: any) =>
+      `${(r.org_name || '').toLowerCase()}|${(r.vendor || '').toLowerCase()}|${(r.product_name || '').toLowerCase()}`;
+
+    // Group existing rows by org+vendor+product
+    const byProduct = new Map<string, any[]>();
+    rows.forEach(r => {
+      const k = idKey(r);
+      if (!byProduct.has(k)) byProduct.set(k, []);
+      byProduct.get(k)!.push(r);
     });
 
-    const toInsert: typeof stacks = [];
-    const toUpdate: Array<{ id: string; email_list: string }> = [];
+    const clean: IncomingStack[] = [];
+    const exactMerges: Array<{ id: string; email_list: string }> = [];
+    const conflicts: TechStackConflict[] = [];
 
     for (const stack of stacks) {
-      const key = `${stack.vendor.toLowerCase()}|${stack.product_name.toLowerCase()}|${(stack.version || '').toLowerCase()}|${stack.org_name.toLowerCase()}`;
-      const existingRow = existingMap.get(key);
+      const k = idKey(stack);
+      const group = byProduct.get(k);
 
-      if (existingRow) {
-        const existingEmails = (existingRow.email_list || existingRow.email_id || '').split(',').map((e: string) => e.trim().toLowerCase()).filter(Boolean);
-        const newEmails = (stack.email_list || stack.email_id || '').split(',').map((e: string) => e.trim().toLowerCase()).filter(Boolean);
-        const merged = [...new Set([...existingEmails, ...newEmails])];
-        const mergedStr = merged.join(',');
-        if (mergedStr !== (existingRow.email_list || '')) {
-          toUpdate.push({ id: existingRow.id, email_list: mergedStr });
+      if (!group || group.length === 0) {
+        clean.push(stack);
+        continue;
+      }
+
+      // Same org+vendor+product exists. Is there an exact version match?
+      const exact = group.find(
+        r => (r.version || '').toLowerCase() === (stack.version || '').toLowerCase()
+      );
+      if (exact) {
+        // Exact duplicate -> merge emails into that row (no popup)
+        const merged = mergeEmailLists(exact.email_list || exact.email_id || '', stack.email_list || stack.email_id || '');
+        if (merged !== (exact.email_list || '')) {
+          exactMerges.push({ id: exact.id, email_list: merged });
         }
       } else {
-        toInsert.push(stack);
-        existingMap.set(key, { ...stack, email_list: stack.email_list });
+        // Same product, different version -> conflict, needs user decision
+        conflicts.push({
+          incoming: stack,
+          existingRows: group.map(r => ({ id: r.id, version: r.version, email_list: r.email_list })),
+        });
       }
     }
 
-    if (toInsert.length > 0) {
+    return { clean, exactMerges, conflicts };
+  };
+
+  /**
+   * Apply a fully-resolved batch:
+   *  - insert brand-new rows
+   *  - apply exact-duplicate email merges
+   *  - apply per-conflict decisions (separate = insert, merge = update chosen row)
+   */
+  // After any tech-stack change, run a full CVE match for this user so newly
+  // added/edited products are matched against the complete database immediately
+  // (no waiting for the 6h incremental run). Fire-and-forget; refresh results after.
+  const triggerEngineRefresh = async () => {
+    try {
+      await supabase.functions.invoke('cve-engine', { body: {} });
+    } catch (e) {
+      // non-fatal: scheduled incremental run will still pick it up later
+      console.warn('[techstack] engine refresh after change failed', e);
+    }
+  };
+
+  const applyTechStacks = async (params: {
+    clean: IncomingStack[];
+    exactMerges: Array<{ id: string; email_list: string }>;
+    decisions: ConflictDecision[];
+  }) => {
+    if (!user?.email) throw new Error('Not authenticated');
+
+    const inserts: IncomingStack[] = [...params.clean];
+    const updates: Array<{ id: string; version?: string; email_list: string }> = [
+      ...params.exactMerges.map(m => ({ id: m.id, email_list: m.email_list })),
+    ];
+
+    // Fetch current rows once for merge-target email lookup
+    const { data: existing } = await supabase
+      .from('tech_stack')
+      .select('id, version, email_list, email_id')
+      .eq('email_id', user.email);
+    const rowById = new Map((existing || []).map(r => [r.id, r]));
+
+    for (const d of params.decisions) {
+      if (d.action === 'separate') {
+        inserts.push(d.incoming);
+      } else if (d.action === 'merge' && d.mergeTargetId) {
+        const target = rowById.get(d.mergeTargetId);
+        const mergedEmails = mergeEmailLists(
+          (target?.email_list as string) || (target?.email_id as string) || '',
+          d.incoming.email_list || d.incoming.email_id || ''
+        );
+        updates.push({ id: d.mergeTargetId, version: d.incoming.version, email_list: mergedEmails });
+      }
+    }
+
+    if (inserts.length > 0) {
       const { error } = await supabase
         .from('tech_stack')
-        .insert(toInsert as any);
-      if (error) {
-        if (error.code === '23505' || error.message?.includes('uq_tech_stack_entry')) {
-          throw new Error('Some entries already exist in your tech stack. Duplicates were skipped.');
-        }
-        throw error;
-      }
+        .upsert(inserts as any, {
+          onConflict: 'email_id,org_name,vendor,product_name,version',
+          ignoreDuplicates: true,
+        });
+      if (error) throw error;
     }
 
-    for (const update of toUpdate) {
-      await supabase
-        .from('tech_stack')
-        .update({ email_list: update.email_list })
-        .eq('id', update.id);
+    for (const u of updates) {
+      const patch: any = { email_list: u.email_list };
+      if (u.version !== undefined) patch.version = u.version;
+      const { error } = await supabase.from('tech_stack').update(patch).eq('id', u.id);
+      if (error) throw error;
     }
 
     await fetchTechStacks();
+    await triggerEngineRefresh();
+  };
+
+  /**
+   * Backwards-compatible bulk add. When there are no version conflicts it just
+   * inserts/merges directly. If conflicts exist it throws a typed error carrying
+   * the conflict list so the caller (upload modal) can prompt the user.
+   */
+  const addMultipleTechStacks = async (stacks: IncomingStack[]) => {
+    const { clean, exactMerges, conflicts } = await analyzeTechStacks(stacks);
+    if (conflicts.length > 0) {
+      const err: any = new Error('CONFLICTS');
+      err.code = 'TECH_STACK_CONFLICTS';
+      err.conflicts = conflicts;
+      err.clean = clean;
+      err.exactMerges = exactMerges;
+      throw err;
+    }
+    await applyTechStacks({ clean, exactMerges, decisions: [] });
+  };
+
+  /**
+   * Single add (manual modal). Uses the same conflict rules as bulk:
+   *  - brand new / exact duplicate -> applied directly.
+   *  - same org+vendor+product, different version -> throws TECH_STACK_CONFLICTS
+   *    so the modal can prompt the user (update existing vs add separate).
+   */
+  const addTechStack = async (stack: IncomingStack) => {
+    const { clean, exactMerges, conflicts } = await analyzeTechStacks([stack]);
+    if (conflicts.length > 0) {
+      const err: any = new Error('CONFLICTS');
+      err.code = 'TECH_STACK_CONFLICTS';
+      err.conflicts = conflicts;
+      err.clean = clean;
+      err.exactMerges = exactMerges;
+      throw err;
+    }
+    await applyTechStacks({ clean, exactMerges, decisions: [] });
   };
 
   const updateTechStack = async (id: string, updates: Partial<{
+    org_name: string;
     vendor: string;
     product_name: string;
     version: string;
@@ -286,6 +405,7 @@ export const useTechStacks = () => {
 
     if (error) throw error;
     await fetchTechStacks();
+    await triggerEngineRefresh();
   };
 
   const deleteTechStack = async (id: string) => {
@@ -296,6 +416,7 @@ export const useTechStacks = () => {
 
     if (error) throw error;
     await fetchTechStacks();
+    await triggerEngineRefresh();
   };
 
   return {
@@ -305,6 +426,8 @@ export const useTechStacks = () => {
     refetch: fetchTechStacks,
     addTechStack,
     addMultipleTechStacks,
+    analyzeTechStacks,
+    applyTechStacks,
     updateTechStack,
     deleteTechStack
   };
@@ -332,7 +455,7 @@ export const useTechStackResults = () => {
         .from('tech_stack_results')
         .select('*')
         .eq('email_id', user.email)
-        .order('created_at', { ascending: false });
+        .order('last_modified', { ascending: false });
 
       if (error) throw error;
 

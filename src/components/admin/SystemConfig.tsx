@@ -31,6 +31,18 @@ import { useToast } from "@/hooks/use-toast";
 import { useAdminActions } from "@/hooks/useAdminActions";
 import type { Json } from "@/integrations/supabase/types";
 
+// Snap a "HH:MM" time to the nearest 15-min grid slot (00/15/30/45), so the
+// fetch schedule always lands on a time the every-5-min scheduler will hit.
+function snapTo15(hhmm: string): string {
+  const m = /^(\d{1,2}):(\d{1,2})$/.exec(hhmm || '');
+  if (!m) return '00:00';
+  let h = Math.max(0, Math.min(23, parseInt(m[1], 10)));
+  let min = Math.max(0, Math.min(59, parseInt(m[2], 10)));
+  const snapped = [0, 15, 30, 45].reduce((prev, cur) => (Math.abs(cur - min) < Math.abs(prev - min) ? cur : prev), 0);
+  min = snapped === 60 ? 0 : snapped;
+  return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+}
+
 interface SystemSettings {
   engineEnabled: boolean;
   cveSourceEnabled: boolean;
@@ -40,6 +52,15 @@ interface SystemSettings {
   highThreshold: number;
   mediumThreshold: number;
   engineSchedule: string;
+  engineScheduleCustomValue: string;
+  engineScheduleCustomUnit: 'hours' | 'days';
+  // NVD/CERT-In daily fetch schedule (IST). 24-hour "HH:MM" strings.
+  nvdFetchTime: string;    // e.g. "20:35"
+  certInFetchTime: string; // e.g. "19:35"
+  nvdFetchFrequency: string;    // '6h' | '12h' | 'daily' | 'weekly'
+  certInFetchFrequency: string; // '6h' | '12h' | 'daily' | 'weekly'
+  nvdFetchDay: string;    // for weekly: 'monday'..'sunday'
+  certInFetchDay: string; // for weekly
 }
 
 const defaultSettings: SystemSettings = {
@@ -50,7 +71,16 @@ const defaultSettings: SystemSettings = {
   criticalThreshold: 9.0,
   highThreshold: 7.0,
   mediumThreshold: 4.0,
-  engineSchedule: 'daily'
+  engineSchedule: 'daily',
+  engineScheduleCustomValue: '6',
+  engineScheduleCustomUnit: 'hours',
+  // Defaults on the 15-min grid (IST). NVD 20:30 IST = 15:00 UTC, CERT 19:30 IST = 14:00 UTC.
+  nvdFetchTime: '20:30',
+  certInFetchTime: '19:30',
+  nvdFetchFrequency: 'daily',
+  certInFetchFrequency: 'daily',
+  nvdFetchDay: 'monday',
+  certInFetchDay: 'monday'
 };
 
 const SystemConfig = () => {
@@ -95,7 +125,15 @@ const SystemConfig = () => {
             criticalThreshold: (savedSettings.criticalThreshold as number) ?? defaultSettings.criticalThreshold,
             highThreshold: (savedSettings.highThreshold as number) ?? defaultSettings.highThreshold,
             mediumThreshold: (savedSettings.mediumThreshold as number) ?? defaultSettings.mediumThreshold,
-            engineSchedule: (savedSettings.engineSchedule as string) ?? defaultSettings.engineSchedule
+            engineSchedule: (savedSettings.engineSchedule as string) ?? defaultSettings.engineSchedule,
+            engineScheduleCustomValue: (savedSettings.engineScheduleCustomValue as string) ?? defaultSettings.engineScheduleCustomValue,
+            engineScheduleCustomUnit: (savedSettings.engineScheduleCustomUnit as 'hours' | 'days') ?? defaultSettings.engineScheduleCustomUnit,
+            nvdFetchTime: (savedSettings.nvdFetchTime as string) ?? defaultSettings.nvdFetchTime,
+            certInFetchTime: (savedSettings.certInFetchTime as string) ?? defaultSettings.certInFetchTime,
+            nvdFetchFrequency: (savedSettings.nvdFetchFrequency as string) ?? defaultSettings.nvdFetchFrequency,
+            certInFetchFrequency: (savedSettings.certInFetchFrequency as string) ?? defaultSettings.certInFetchFrequency,
+            nvdFetchDay: (savedSettings.nvdFetchDay as string) ?? defaultSettings.nvdFetchDay,
+            certInFetchDay: (savedSettings.certInFetchDay as string) ?? defaultSettings.certInFetchDay
           };
           setSettings(loadedSettings);
           setOriginalSettings(loadedSettings);
@@ -251,11 +289,39 @@ const SystemConfig = () => {
                   <SelectItem value="hourly">Hourly</SelectItem>
                   <SelectItem value="daily">Daily</SelectItem>
                   <SelectItem value="weekly">Weekly</SelectItem>
+                  <SelectItem value="custom">Custom</SelectItem>
                   <SelectItem value="manual">Manual Only</SelectItem>
                 </SelectContent>
               </Select>
+              {settings.engineSchedule === 'custom' && (
+                <div className="flex items-center gap-1">
+                  <span className="text-sm text-muted-foreground">every</span>
+                  <Input
+                    type="number"
+                    min={1}
+                    className="w-[70px]"
+                    value={settings.engineScheduleCustomValue}
+                    onChange={(e) => updateSetting('engineScheduleCustomValue', e.target.value || '1')}
+                  />
+                  <Select
+                    value={settings.engineScheduleCustomUnit}
+                    onValueChange={(value) => updateSetting('engineScheduleCustomUnit', value)}
+                  >
+                    <SelectTrigger className="w-[100px]"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="hours">hours</SelectItem>
+                      <SelectItem value="days">days</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
             </div>
           </div>
+          <p className="text-xs text-muted-foreground">
+            Automatic re-match runs on this schedule server-side (every 5 min the scheduler checks what is due).
+            A user's own refresh interval, if set, takes priority over this. "Manual Only" = no admin-driven auto run.
+            Use "Trigger Engine Manually" for an immediate system-wide run.
+          </p>
         </CardContent>
       </Card>
 
@@ -293,6 +359,130 @@ const SystemConfig = () => {
               onCheckedChange={(checked) => updateSetting('certInSourceEnabled', checked)}
             />
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Data Fetch Schedule (NVD / CERT-In, IST) */}
+      <Card className="border-border">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Clock className="h-5 w-5" />
+            Data Fetch Schedule (IST)
+          </CardTitle>
+          <CardDescription>How often and when the server fetches vulnerability data</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-3 p-4 bg-muted/20 rounded-lg">
+              <Label className="text-base">NVD Fetch Schedule</Label>
+              <p className="text-xs text-muted-foreground">National Vulnerability Database (modified + new CVEs)</p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <Select value={settings.nvdFetchFrequency} onValueChange={(v) => updateSetting('nvdFetchFrequency', v)}>
+                  <SelectTrigger className="w-[140px]"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="6h">Every 6 hours</SelectItem>
+                    <SelectItem value="12h">Every 12 hours</SelectItem>
+                    <SelectItem value="daily">Daily</SelectItem>
+                    <SelectItem value="weekly">Weekly</SelectItem>
+                  </SelectContent>
+                </Select>
+                {(settings.nvdFetchFrequency === 'daily' || settings.nvdFetchFrequency === 'weekly') && (
+                  <div className="flex items-center gap-1">
+                    <span className="text-sm text-muted-foreground">at</span>
+                    <Select value={settings.nvdFetchTime.split(':')[0] || '16'} onValueChange={(h) => updateSetting('nvdFetchTime', h + ':' + (settings.nvdFetchTime.split(':')[1] || '00'))}>
+                      <SelectTrigger className="w-[70px]"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {Array.from({length: 24}, (_, i) => String(i).padStart(2, '0')).map(h => (
+                          <SelectItem key={h} value={h}>{h}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <span className="text-sm">:</span>
+                    <Select value={settings.nvdFetchTime.split(':')[1] || '00'} onValueChange={(m) => updateSetting('nvdFetchTime', (settings.nvdFetchTime.split(':')[0] || '16') + ':' + m)}>
+                      <SelectTrigger className="w-[70px]"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="00">00</SelectItem>
+                        <SelectItem value="15">15</SelectItem>
+                        <SelectItem value="30">30</SelectItem>
+                        <SelectItem value="45">45</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <span className="text-sm text-muted-foreground">IST</span>
+                  </div>
+                )}
+                {settings.nvdFetchFrequency === 'weekly' && (
+                  <Select value={settings.nvdFetchDay} onValueChange={(v) => updateSetting('nvdFetchDay', v)}>
+                    <SelectTrigger className="w-[120px]"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="monday">Monday</SelectItem>
+                      <SelectItem value="tuesday">Tuesday</SelectItem>
+                      <SelectItem value="wednesday">Wednesday</SelectItem>
+                      <SelectItem value="thursday">Thursday</SelectItem>
+                      <SelectItem value="friday">Friday</SelectItem>
+                      <SelectItem value="saturday">Saturday</SelectItem>
+                      <SelectItem value="sunday">Sunday</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+            </div>
+            <div className="space-y-3 p-4 bg-muted/20 rounded-lg">
+              <Label className="text-base">CERT-In Fetch Schedule</Label>
+              <p className="text-xs text-muted-foreground">Indian CERT advisory pull</p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <Select value={settings.certInFetchFrequency} onValueChange={(v) => updateSetting('certInFetchFrequency', v)}>
+                  <SelectTrigger className="w-[140px]"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="6h">Every 6 hours</SelectItem>
+                    <SelectItem value="12h">Every 12 hours</SelectItem>
+                    <SelectItem value="daily">Daily</SelectItem>
+                    <SelectItem value="weekly">Weekly</SelectItem>
+                  </SelectContent>
+                </Select>
+                {(settings.certInFetchFrequency === 'daily' || settings.certInFetchFrequency === 'weekly') && (
+                  <div className="flex items-center gap-1">
+                    <span className="text-sm text-muted-foreground">at</span>
+                    <Select value={settings.certInFetchTime.split(':')[0] || '16'} onValueChange={(h) => updateSetting('certInFetchTime', h + ':' + (settings.certInFetchTime.split(':')[1] || '00'))}>
+                      <SelectTrigger className="w-[70px]"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {Array.from({length: 24}, (_, i) => String(i).padStart(2, '0')).map(h => (
+                          <SelectItem key={h} value={h}>{h}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <span className="text-sm">:</span>
+                    <Select value={settings.certInFetchTime.split(':')[1] || '00'} onValueChange={(m) => updateSetting('certInFetchTime', (settings.certInFetchTime.split(':')[0] || '16') + ':' + m)}>
+                      <SelectTrigger className="w-[70px]"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="00">00</SelectItem>
+                        <SelectItem value="15">15</SelectItem>
+                        <SelectItem value="30">30</SelectItem>
+                        <SelectItem value="45">45</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <span className="text-sm text-muted-foreground">IST</span>
+                  </div>
+                )}
+                {settings.certInFetchFrequency === 'weekly' && (
+                  <Select value={settings.certInFetchDay} onValueChange={(v) => updateSetting('certInFetchDay', v)}>
+                    <SelectTrigger className="w-[120px]"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="monday">Monday</SelectItem>
+                      <SelectItem value="tuesday">Tuesday</SelectItem>
+                      <SelectItem value="wednesday">Wednesday</SelectItem>
+                      <SelectItem value="thursday">Thursday</SelectItem>
+                      <SelectItem value="friday">Friday</SelectItem>
+                      <SelectItem value="saturday">Saturday</SelectItem>
+                      <SelectItem value="sunday">Sunday</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            System-wide setting. The server applies the schedule on its next sync (every 5 min).
+          </p>
         </CardContent>
       </Card>
 

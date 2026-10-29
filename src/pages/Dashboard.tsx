@@ -38,8 +38,7 @@ const Dashboard = () => {
     if (certInEnabled) {
       return allAdvisories; // Include all (NVD + CERT-In)
     }
-    // NVD only - exclude advisories that are CERT-In only (no CVE ID)
-    return allAdvisories.filter(a => a.cve_id && a.cve_id.startsWith('CVE-'));
+    return allAdvisories.filter((a: any) => a.hasNvd === true);
   }, [allAdvisories, certInEnabled]);
 
   // Calculate filtered stats based on toggle

@@ -9,8 +9,15 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { sampleTemplateData } from "@/lib/mockData";
 import { useAuth } from "@/contexts/AuthContext";
-import { useTechStacks } from "@/hooks/useSupabaseData";
+import { useTechStacks, IncomingStack, TechStackConflict, ConflictDecision } from "@/hooks/useSupabaseData";
 import { useCVEEngine } from "@/hooks/useCVEEngine";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import Papa from "papaparse";
 import ExcelJS from "exceljs";
 import {
@@ -36,7 +43,7 @@ interface ParsedRow {
 const TechStackUploadModal = ({ isOpen, onClose }: TechStackUploadModalProps) => {
   const { toast } = useToast();
   const { user } = useAuth();
-  const { addMultipleTechStacks } = useTechStacks();
+  const { addMultipleTechStacks, applyTechStacks } = useTechStacks();
   const { triggerEngineBackground } = useCVEEngine();
   
   const [file, setFile] = useState<File | null>(null);
@@ -45,6 +52,13 @@ const TechStackUploadModal = ({ isOpen, onClose }: TechStackUploadModalProps) =>
   const [error, setError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+
+  // Conflict resolution state (org+vendor+product match, different version)
+  const [conflicts, setConflicts] = useState<TechStackConflict[]>([]);
+  const [pendingClean, setPendingClean] = useState<IncomingStack[]>([]);
+  const [pendingExactMerges, setPendingExactMerges] = useState<Array<{ id: string; email_list: string }>>([]);
+  // Per-conflict user choice: keyed by conflict index
+  const [decisions, setDecisions] = useState<Record<number, { action: 'merge' | 'separate'; mergeTargetId?: string }>>({});
 
   const userOrganization = user?.user_metadata?.organization || 'Default Organization';
   const userEmail = user?.email || '';
@@ -256,15 +270,78 @@ const TechStackUploadModal = ({ isOpen, onClose }: TechStackUploadModalProps) =>
 
       toast({
         title: "Upload successful",
-        description: `${stacksToInsert.length} entries added to tech stack. CVE scanning started.`,
+        description: `${stacksToInsert.length} entries processed. CVE scanning started.`,
       });
 
       handleClose();
     } catch (err: any) {
-      setError(err.message || "Failed to upload data");
+      // If some rows conflict (same org+vendor+product, different version),
+      // switch to the conflict-resolution screen instead of failing.
+      if (err?.code === 'TECH_STACK_CONFLICTS') {
+        setConflicts(err.conflicts || []);
+        setPendingClean(err.clean || []);
+        setPendingExactMerges(err.exactMerges || []);
+        // Default every conflict to "merge" into the first existing version
+        const initial: Record<number, { action: 'merge' | 'separate'; mergeTargetId?: string }> = {};
+        (err.conflicts || []).forEach((c: TechStackConflict, i: number) => {
+          initial[i] = { action: 'merge', mergeTargetId: c.existingRows[0]?.id };
+        });
+        setDecisions(initial);
+        setError(null);
+      } else {
+        setError(err.message || "Failed to upload data");
+      }
     } finally {
       setIsUploading(false);
     }
+  };
+
+  // Apply the user's per-conflict choices, then insert the clean rows + exact merges.
+  const handleResolveConflicts = async () => {
+    setIsUploading(true);
+    try {
+      const resolved: ConflictDecision[] = conflicts.map((c, i) => {
+        const d = decisions[i] || { action: 'merge', mergeTargetId: c.existingRows[0]?.id };
+        return {
+          incoming: c.incoming,
+          action: d.action,
+          mergeTargetId: d.action === 'merge' ? (d.mergeTargetId || c.existingRows[0]?.id) : undefined,
+        };
+      });
+
+      await applyTechStacks({
+        clean: pendingClean,
+        exactMerges: pendingExactMerges,
+        decisions: resolved,
+      });
+      triggerEngineBackground();
+
+      toast({
+        title: "Upload complete",
+        description: "Your tech stack has been updated. CVE scanning started.",
+      });
+      handleClose();
+    } catch (err: any) {
+      setError(err.message || "Failed to apply changes");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const setConflictAction = (index: number, action: 'merge' | 'separate') => {
+    setDecisions(prev => ({
+      ...prev,
+      [index]: {
+        action,
+        mergeTargetId: action === 'merge'
+          ? (prev[index]?.mergeTargetId || conflicts[index]?.existingRows[0]?.id)
+          : undefined,
+      },
+    }));
+  };
+
+  const setConflictTarget = (index: number, targetId: string) => {
+    setDecisions(prev => ({ ...prev, [index]: { action: 'merge', mergeTargetId: targetId } }));
   };
 
   const handleClose = () => {
@@ -273,6 +350,10 @@ const TechStackUploadModal = ({ isOpen, onClose }: TechStackUploadModalProps) =>
     setError(null);
     setSearchQuery("");
     setSkippedRows(0);
+    setConflicts([]);
+    setPendingClean([]);
+    setPendingExactMerges([]);
+    setDecisions({});
     onClose();
   };
 
@@ -314,7 +395,92 @@ const TechStackUploadModal = ({ isOpen, onClose }: TechStackUploadModalProps) =>
             </Button>
           </div>
 
-          {/* Content */}
+          {/* Conflict resolution screen */}
+          {conflicts.length > 0 ? (
+            <div className="p-6 space-y-4 max-h-[60vh] overflow-y-auto">
+              <div className="flex items-start gap-2 p-4 rounded-xl bg-accent/10 border border-accent/30 text-foreground">
+                <AlertCircle className="h-5 w-5 flex-shrink-0 mt-0.5 text-accent" />
+                <p className="text-sm">
+                  {conflicts.length} item(s) already exist for the same organization with a different version.
+                  For each one, choose to update the existing entry or add it as a separate entry.
+                </p>
+              </div>
+
+              {conflicts.map((c, i) => {
+                const d = decisions[i] || { action: 'merge', mergeTargetId: c.existingRows[0]?.id };
+                const multiple = c.existingRows.length > 1;
+                return (
+                  <div key={i} className="rounded-xl border border-border p-4 space-y-3">
+                    <div className="text-sm text-foreground">
+                      <span className="font-semibold">{c.incoming.vendor} {c.incoming.product_name}</span>
+                      {" "}already exists for{" "}
+                      <span className="font-semibold">{c.incoming.org_name}</span>.
+                      New version: <span className="font-mono">{c.incoming.version}</span>.
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        variant={d.action === 'merge' ? 'accent' : 'outline'}
+                        size="sm"
+                        onClick={() => setConflictAction(i, 'merge')}
+                      >
+                        Update existing
+                      </Button>
+                      <Button
+                        variant={d.action === 'separate' ? 'accent' : 'outline'}
+                        size="sm"
+                        onClick={() => setConflictAction(i, 'separate')}
+                      >
+                        Add separate
+                      </Button>
+                    </div>
+
+                    {d.action === 'merge' && multiple && (
+                      <div className="space-y-1">
+                        <p className="text-xs text-muted-foreground">
+                          Multiple versions exist. Select which one to update to {c.incoming.version}:
+                        </p>
+                        <Select
+                          value={d.mergeTargetId || c.existingRows[0]?.id}
+                          onValueChange={(v) => setConflictTarget(i, v)}
+                        >
+                          <SelectTrigger className="w-full sm:w-64">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent className="bg-card">
+                            {c.existingRows.map((r) => (
+                              <SelectItem key={r.id} value={r.id}>
+                                Version {r.version}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+
+                    {d.action === 'merge' && !multiple && (
+                      <p className="text-xs text-muted-foreground">
+                        Existing version <span className="font-mono">{c.existingRows[0]?.version}</span> will be updated to <span className="font-mono">{c.incoming.version}</span>.
+                      </p>
+                    )}
+                    {d.action === 'separate' && (
+                      <p className="text-xs text-muted-foreground">
+                        A new entry will be created for version <span className="font-mono">{c.incoming.version}</span>.
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+
+              {error && (
+                <div className="flex items-center gap-2 p-4 rounded-xl bg-destructive/10 border border-destructive/30 text-destructive">
+                  <AlertCircle className="h-5 w-5 flex-shrink-0" />
+                  <p className="text-sm">{error}</p>
+                </div>
+              )}
+            </div>
+          ) : (
+          /* Content */
           <div className="p-6 space-y-6 max-h-[60vh] overflow-y-auto">
             {/* NVD CPE Directory Instruction */}
             <div className="p-4 rounded-xl bg-accent/10 border border-accent/30">
@@ -493,18 +659,33 @@ const TechStackUploadModal = ({ isOpen, onClose }: TechStackUploadModalProps) =>
             )}
           </div>
 
+          )}
+
           {/* Footer */}
           <div className="flex items-center justify-end gap-3 p-6 border-t border-border bg-muted/30">
-            <Button variant="outline" onClick={handleClose}>
-              Cancel
-            </Button>
-            <Button 
-              variant="accent" 
-              onClick={handleSubmit}
-              disabled={parsedData.length === 0 || isUploading}
-            >
-              {isUploading ? 'Uploading...' : `Upload ${parsedData.length} Products`}
-            </Button>
+            {conflicts.length > 0 ? (
+              <>
+                <Button variant="outline" onClick={handleClose}>
+                  Cancel
+                </Button>
+                <Button variant="accent" onClick={handleResolveConflicts} disabled={isUploading}>
+                  {isUploading ? 'Applying...' : 'Confirm & Upload'}
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button variant="outline" onClick={handleClose}>
+                  Cancel
+                </Button>
+                <Button 
+                  variant="accent" 
+                  onClick={handleSubmit}
+                  disabled={parsedData.length === 0 || isUploading}
+                >
+                  {isUploading ? 'Uploading...' : `Upload ${parsedData.length} Products`}
+                </Button>
+              </>
+            )}
           </div>
         </motion.div>
       </motion.div>

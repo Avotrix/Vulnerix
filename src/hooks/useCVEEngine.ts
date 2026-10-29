@@ -50,7 +50,21 @@ export const useCVEEngine = () => {
       }
 
       console.log('[CVE Engine] Processing complete:', data);
-      
+
+      // After matching, immediately send the notification digest for this user.
+      // send-notifications respects: email_enabled, severity filter, last-7-days
+      // recency, and dedup (never re-sends an advisory already emailed).
+      // Fire-and-forget so it never blocks the engine result.
+      supabase.functions
+        .invoke('send-notifications', {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        })
+        .then(({ data: nd, error: nerr }) => {
+          if (nerr) console.warn('[Notifications] warning:', nerr.message);
+          else console.log('[Notifications] result:', nd);
+        })
+        .catch((e) => console.warn('[Notifications] error:', e));
+
       return {
         success: data?.success || false,
         processed: data?.processed || 0,

@@ -18,14 +18,48 @@ interface HealthCheck {
   lastChecked: Date;
 }
 
+interface SystemMetrics {
+  db_size_pretty: string;
+  max_connections: number;
+  total_connections: number;
+  active_connections: number;
+  idle_connections: number;
+  connection_pct: number;
+  uptime_seconds: number;
+  commit_ratio_pct: number;
+}
+
+const formatUptime = (secs: number): string => {
+  if (!secs || secs < 0) return '—';
+  const d = Math.floor(secs / 86400);
+  const h = Math.floor((secs % 86400) / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+};
+
 const SystemHealth = () => {
   const [checks, setChecks] = useState<HealthCheck[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [overallHealth, setOverallHealth] = useState<'healthy' | 'degraded' | 'error'>('healthy');
+  const [metrics, setMetrics] = useState<SystemMetrics | null>(null);
 
   const runHealthChecks = async () => {
     const results: HealthCheck[] = [];
+
+    // Real DB metrics via admin RPC (no fake numbers)
+    try {
+      const { data: m, error: mErr } = await supabase.rpc('get_system_metrics');
+      if (!mErr && m && !(m as any).error) {
+        setMetrics(m as unknown as SystemMetrics);
+      } else {
+        setMetrics(null);
+      }
+    } catch {
+      setMetrics(null);
+    }
 
     // Database connectivity check
     const dbStart = Date.now();
@@ -73,23 +107,27 @@ const SystemHealth = () => {
       });
     }
 
-    // Edge functions check
+    // Edge functions check — real reachability via a lightweight invoke.
+    // We call cve-engine without auth; a reachable function replies (even 401),
+    // an unreachable one throws a network error.
     const edgeStart = Date.now();
     try {
-      // Just check if we can reach the functions endpoint
+      await supabase.functions.invoke('cve-engine', { body: { healthcheck: true } });
       results.push({
         name: 'Edge Functions',
         status: 'healthy',
         latency: Date.now() - edgeStart,
-        message: 'Available',
+        message: `Reachable (${Date.now() - edgeStart}ms)`,
         lastChecked: new Date()
       });
-    } catch (e) {
+    } catch (e: any) {
+      // A returned error (e.g. 401/403) still means the function is reachable.
+      const reachable = !!e?.context || !!e?.status;
       results.push({
         name: 'Edge Functions',
-        status: 'degraded',
-        latency: null,
-        message: 'Check manually',
+        status: reachable ? 'healthy' : 'degraded',
+        latency: Date.now() - edgeStart,
+        message: reachable ? 'Reachable' : 'Unreachable',
         lastChecked: new Date()
       });
     }
@@ -117,24 +155,6 @@ const SystemHealth = () => {
         lastChecked: new Date()
       });
     }
-
-    // Storage check
-    results.push({
-      name: 'Storage Service',
-      status: 'healthy',
-      latency: null,
-      message: 'Available',
-      lastChecked: new Date()
-    });
-
-    // Realtime check
-    results.push({
-      name: 'Realtime Service',
-      status: 'healthy',
-      latency: null,
-      message: 'Active',
-      lastChecked: new Date()
-    });
 
     setChecks(results);
 
@@ -297,46 +317,60 @@ const SystemHealth = () => {
         ))}
       </div>
 
-      {/* Quick Metrics */}
+      {/* Real Database Metrics */}
       <Card className="border-border">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Activity className="h-5 w-5" />
-            System Metrics
+            Database Metrics
           </CardTitle>
-          <CardDescription>Current resource utilization</CardDescription>
+          <CardDescription>Live PostgreSQL statistics</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-muted-foreground">Database</span>
-                <span className="text-sm font-medium text-foreground">Normal</span>
+          {metrics ? (
+            <div className="space-y-6">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1">Database Size</p>
+                  <p className="text-xl font-bold text-foreground">{metrics.db_size_pretty}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1">Uptime</p>
+                  <p className="text-xl font-bold text-foreground">{formatUptime(metrics.uptime_seconds)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1">Active Connections</p>
+                  <p className="text-xl font-bold text-foreground">{metrics.active_connections}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1">Commit Ratio</p>
+                  <p className="text-xl font-bold text-foreground">{metrics.commit_ratio_pct}%</p>
+                </div>
               </div>
-              <Progress value={35} className="h-2" />
-            </div>
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-muted-foreground">Auth Service</span>
-                <span className="text-sm font-medium text-foreground">Normal</span>
+
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm text-muted-foreground">
+                    Connections ({metrics.total_connections} / {metrics.max_connections})
+                  </span>
+                  <span className={`text-sm font-medium ${
+                    metrics.connection_pct >= 80 ? 'text-red-500' :
+                    metrics.connection_pct >= 60 ? 'text-yellow-500' : 'text-foreground'
+                  }`}>
+                    {metrics.connection_pct}%
+                  </span>
+                </div>
+                <Progress value={metrics.connection_pct} className="h-2" />
+                <p className="text-xs text-muted-foreground mt-1">
+                  {metrics.active_connections} active · {metrics.idle_connections} idle
+                </p>
               </div>
-              <Progress value={20} className="h-2" />
             </div>
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-muted-foreground">Edge Functions</span>
-                <span className="text-sm font-medium text-foreground">Normal</span>
-              </div>
-              <Progress value={15} className="h-2" />
-            </div>
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-muted-foreground">Storage</span>
-                <span className="text-sm font-medium text-foreground">Normal</span>
-              </div>
-              <Progress value={10} className="h-2" />
-            </div>
-          </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Metrics unavailable. Requires admin access.
+            </p>
+          )}
         </CardContent>
       </Card>
 

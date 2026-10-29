@@ -106,10 +106,53 @@ const tableSchemas: Record<string, { description: string; columns: ColumnInfo[] 
   }
 };
 
+const ROWS_LIMIT = 50;
+
 const DatabaseViewer = () => {
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [expandedTable, setExpandedTable] = useState<string | null>(null);
+  // Per-table: which view (schema columns vs actual rows), cached row data, loading flag
+  const [viewMode, setViewMode] = useState<Record<string, 'columns' | 'rows'>>({});
+  const [rowData, setRowData] = useState<Record<string, any[]>>({});
+  const [rowsLoading, setRowsLoading] = useState<Record<string, boolean>>({});
+  const [rowsError, setRowsError] = useState<Record<string, string>>({});
+
+  // Fetch actual rows for a table (admin RLS policies allow reading all rows).
+  const fetchRows = async (tableName: string) => {
+    if (rowData[tableName]) return; // already loaded
+    setRowsLoading(prev => ({ ...prev, [tableName]: true }));
+    setRowsError(prev => ({ ...prev, [tableName]: '' }));
+    try {
+      const { data, error } = await supabase
+        .from(tableName as any)
+        .select('*')
+        .limit(ROWS_LIMIT);
+      if (error) throw error;
+      setRowData(prev => ({ ...prev, [tableName]: data || [] }));
+    } catch (e: any) {
+      setRowsError(prev => ({ ...prev, [tableName]: e?.message || 'Failed to load rows' }));
+      setRowData(prev => ({ ...prev, [tableName]: [] }));
+    } finally {
+      setRowsLoading(prev => ({ ...prev, [tableName]: false }));
+    }
+  };
+
+  const setMode = (tableName: string, mode: 'columns' | 'rows') => {
+    setViewMode(prev => ({ ...prev, [tableName]: mode }));
+    if (mode === 'rows') fetchRows(tableName);
+  };
+
+  // Render a cell value safely (objects/arrays -> JSON, long text -> truncated)
+  const renderCell = (val: any): string => {
+    if (val === null || val === undefined) return '—';
+    if (typeof val === 'object') {
+      const s = JSON.stringify(val);
+      return s.length > 120 ? s.slice(0, 120) + '…' : s;
+    }
+    const s = String(val);
+    return s.length > 120 ? s.slice(0, 120) + '…' : s;
+  };
 
   useEffect(() => {
     const fetchTableInfo = async () => {
@@ -270,6 +313,32 @@ const DatabaseViewer = () => {
 
               {expandedTable === table.name && (
                 <div className="border-t border-border">
+                  {/* Toggle: Columns (schema) vs Rows (data) */}
+                  <div className="flex items-center gap-2 p-3 border-b border-border bg-muted/20">
+                    <button
+                      className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                        (viewMode[table.name] || 'columns') === 'columns'
+                          ? 'bg-accent text-accent-foreground'
+                          : 'text-muted-foreground hover:bg-muted'
+                      }`}
+                      onClick={() => setMode(table.name, 'columns')}
+                    >
+                      Columns
+                    </button>
+                    <button
+                      className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                        viewMode[table.name] === 'rows'
+                          ? 'bg-accent text-accent-foreground'
+                          : 'text-muted-foreground hover:bg-muted'
+                      }`}
+                      onClick={() => setMode(table.name, 'rows')}
+                    >
+                      Rows {table.rowCount > 0 && `(showing up to ${ROWS_LIMIT})`}
+                    </button>
+                  </div>
+
+                  {/* COLUMNS (schema) view */}
+                  {(viewMode[table.name] || 'columns') === 'columns' && (
                   <div className="overflow-x-auto">
                     <table className="w-full">
                       <thead className="bg-muted/50">
@@ -326,6 +395,45 @@ const DatabaseViewer = () => {
                       </tbody>
                     </table>
                   </div>
+                  )}
+
+                  {/* ROWS (data) view */}
+                  {viewMode[table.name] === 'rows' && (
+                  <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
+                    {rowsLoading[table.name] ? (
+                      <div className="flex items-center justify-center p-8">
+                        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-accent"></div>
+                      </div>
+                    ) : rowsError[table.name] ? (
+                      <p className="p-4 text-sm text-destructive">{rowsError[table.name]}</p>
+                    ) : (rowData[table.name] && rowData[table.name].length > 0) ? (
+                      <table className="w-full text-xs">
+                        <thead className="bg-muted/50 sticky top-0">
+                          <tr>
+                            {table.columns.map(col => (
+                              <th key={col.name} className="px-3 py-2 text-left font-medium text-muted-foreground uppercase whitespace-nowrap">
+                                {col.name}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-border">
+                          {rowData[table.name].map((row, ri) => (
+                            <tr key={ri} className="hover:bg-muted/20">
+                              {table.columns.map(col => (
+                                <td key={col.name} className="px-3 py-2 font-mono text-foreground whitespace-nowrap max-w-[240px] truncate" title={renderCell(row[col.name])}>
+                                  {renderCell(row[col.name])}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    ) : (
+                      <p className="p-4 text-sm text-muted-foreground">No rows to display.</p>
+                    )}
+                  </div>
+                  )}
                 </div>
               )}
             </Card>
