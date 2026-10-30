@@ -87,7 +87,7 @@ const RequestDemoModal = ({ isOpen, onClose }: RequestDemoModalProps) => {
       // Send notification email to support (fire and forget — don't block on email failure)
       supabase.functions.invoke("send-email", {
         body: {
-          to: "chetan.patidar@avotrix.com, support@avotrix.com",
+          to: "support@avotrix.com",
           subject: `Demo Request from ${formData.name.trim()} (${formData.organization.trim()})`,
           html: `
             <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
